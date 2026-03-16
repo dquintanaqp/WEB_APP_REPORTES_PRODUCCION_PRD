@@ -1,0 +1,12 @@
+services:
+  flask_pdf_viewer:
+    build: .
+    container_name: flask_pdf_viewer_dev
+    ports:
+      - "5005:5000"
+    environment:
+      # Cambia esta clave
+      FLASK_SECRET_KEY: "dev-secret-cambialo"
+      # EJEMPLO:
+      # DB_CONN_STRING: "Driver={ODBC Driver 18 for SQL Server};Server=10.4.1.240,1433;Database=TU_BD;UID=TU_USER;PWD=TU_PASS;TrustServerCertificate=yes;"
+      DB_CONN_STRING: ""

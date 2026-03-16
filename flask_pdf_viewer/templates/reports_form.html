@@ -1,0 +1,132 @@
+{% extends "layout.html" %}
+{% block title %}Dashboard | Reportes Producción{% endblock %}
+{% block content %}
+
+<div class="panel p-3 p-md-4 mb-3">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+    <div>
+      <div class="h5 m-0">Dashboard</div>
+      <div class="text-muted">Genera y visualiza el informe de producción en PDF.</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a id="btnDesc" class="btn btn-success btn-sm" href="#" target="_blank" rel="noopener">Descargar PDF</a>
+      <a id="btnCSV" class="btn btn-outline-secondary btn-sm" href="#" target="_blank" rel="noopener">CSV</a>
+    </div>
+  </div>
+
+  <form id="filtros" class="row g-3 align-items-end">
+    <div class="col-md-3">
+      <label class="form-label">Sociedad</label>
+      <input class="form-control" name="sociedad" value="{{ default_soc }}" required>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Fecha (≤ ayer)</label>
+      <input class="form-control" type="date" name="fecha" max="{{ max_date }}" required>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Sector</label>
+      <select class="form-select" name="sector">
+        <option value="TODOS">TODOS</option>
+        <option value="Químicos">Químicos</option>
+        <option value="Sales">Sales</option>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label">Grupo</label>
+      <select class="form-select" name="grupo">
+        <option value="1">Grupo 1</option>
+        <option value="2">Grupo 2</option>
+        <option value="3">Grupo 3</option>
+        <option value="4">Grupo 4</option>
+        <option value="5">Grupo 5</option>
+      </select>
+    </div>
+    <div class="col-md-1 d-grid">
+      <button class="btn btn-dark" id="btnVer">Ver</button>
+    </div>
+  </form>
+</div>
+
+<div class="viewer-wrap">
+  <div class="loading-overlay" id="loadingOverlay" aria-hidden="true">
+    <div class="loading-card">
+      <div class="spinner-border spinner-border-sm" role="status" aria-label="Cargando"></div>
+      <div class="loading-text">Cargando reporte…</div>
+    </div>
+  </div>
+  <iframe class="viewer" id="viewer" title="PDF en línea" src=""></iframe>
+</div>
+
+<script>
+const form   = document.getElementById('filtros');
+const viewer = document.getElementById('viewer');
+const btnDesc= document.getElementById('btnDesc');
+const btnCSV = document.getElementById('btnCSV');
+const overlay= document.getElementById('loadingOverlay');
+const sectorSelect = form.querySelector('select[name="sector"]');
+const grupoSelect = form.querySelector('select[name="grupo"]');
+
+function syncGrupo5Availability() {
+  const isSales = (sectorSelect.value || '').toUpperCase() === 'SALES';
+  const grupo5Opt = grupoSelect.querySelector('option[value="5"]');
+  if (!grupo5Opt) return;
+
+  grupo5Opt.disabled = !isSales;
+  if (!isSales && grupoSelect.value === '5') {
+    grupoSelect.value = '1';
+  }
+}
+
+function buildParams() {
+  return new URLSearchParams(new FormData(form)).toString();
+}
+
+function ensureFecha(params) {
+  const p = new URLSearchParams(params);
+  if (!p.get('fecha')) { alert('Selecciona una fecha'); return null; }
+  return p.toString();
+}
+
+function showLoading(){
+  overlay.classList.add('active');
+  overlay.setAttribute('aria-hidden','false');
+}
+function hideLoading(){
+  overlay.classList.remove('active');
+  overlay.setAttribute('aria-hidden','true');
+}
+
+// Oculta al cargar el PDF
+viewer.addEventListener('load', () => {
+  hideLoading();
+});
+
+// Inicializa hrefs al cargar
+(function initLinks(){
+  syncGrupo5Availability();
+  const params = buildParams();
+  btnDesc.href = `/pdf/download?${params}`;
+  btnCSV.href  = `/csv/download?${params}&sep=,&decimal=.&bom=1`;
+})();
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const params = buildParams();
+  const qs = ensureFecha(params);
+  if (!qs) return;
+
+  showLoading();
+  viewer.src = `/pdf/inline?${qs}`;
+  btnDesc.href = `/pdf/download?${qs}`;
+  btnCSV.href  = `/csv/download?${qs}&sep=,&decimal=.&bom=1`;
+});
+
+// Por si el usuario cambia campos sin dar “Ver”
+form.addEventListener('change', () => {
+  syncGrupo5Availability();
+  const params = buildParams();
+  btnDesc.href = `/pdf/download?${params}`;
+  btnCSV.href  = `/csv/download?${params}&sep=,&decimal=.&bom=1`;
+});
+</script>
+{% endblock %}

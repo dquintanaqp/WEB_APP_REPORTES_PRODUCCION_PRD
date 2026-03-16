@@ -1,0 +1,10 @@
+﻿version: "3.8"
+services:
+  flask_pdf_viewer:
+    build: .
+    container_name: flask_pdf_viewer_prd
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./.env.prd
+    restart: unless-stopped

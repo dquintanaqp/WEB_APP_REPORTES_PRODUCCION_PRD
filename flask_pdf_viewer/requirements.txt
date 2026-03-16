@@ -1,0 +1,8 @@
+Flask==3.0.3
+Flask-Login==0.6.3
+pyodbc==5.1.0
+pandas==2.2.2
+fpdf2==2.7.9
+SQLAlchemy==2.0.36
+waitress==3.0.0
+pypdf==4.3.1
