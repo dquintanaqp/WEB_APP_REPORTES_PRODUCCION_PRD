@@ -373,6 +373,17 @@ def _ensure_jer_col(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
     return df
 
 
+def _ensure_col(df: pd.DataFrame, target: str, candidates, default="") -> pd.DataFrame:
+    if target not in df.columns:
+        for c in candidates:
+            if c in df.columns:
+                df[target] = df[c]
+                break
+        else:
+            df[target] = default
+    return df
+
+
 
 
 
@@ -416,6 +427,13 @@ def load_user(uid):
 class MaintenanceError(RuntimeError):
 
     """Bloqueo/timeout del SP o indisponibilidad temporal."""
+
+    pass
+
+
+class DatabaseConfigError(RuntimeError):
+
+    """Credenciales o cadena de conexion invalidas para SQL Server."""
 
     pass
 
@@ -486,6 +504,10 @@ def call_sp(sociedad: str, fecha: str) -> pd.DataFrame:
         if any(t in msg for t in ("1222", "timeout", "deadlock", "bloqueo", "lock timeout")):
 
             raise MaintenanceError("SP bloqueado o timeout") from e
+
+        if any(t in msg for t in ("18456", "28000", "login failed", "invalid connection string attribute", "odbc driver 18 for sql server")):
+
+            raise DatabaseConfigError("Error de autenticacion o configuracion de base de datos") from e
 
         raise
 
@@ -2910,7 +2932,15 @@ def csv_download():
 
     except MaintenanceError:
 
-        return Response("Servicio en mantenimiento. Intente más tarde.",
+        return Response("Servicio en mantenimiento. Intente mas tarde.",
+
+                        mimetype="text/plain; charset=utf-8", status=503)
+
+    except DatabaseConfigError:
+
+        app.logger.exception("Error de conexion/autenticacion SQL para CSV")
+
+        return Response("No fue posible conectar con la base de datos. Revise DB_CONN_STRING, usuario, contrasena y atributos ODBC.",
 
                         mimetype="text/plain; charset=utf-8", status=503)
 
@@ -2922,219 +2952,303 @@ def csv_download():
 
 
 
-    df = filter_sector(df_base, sector)
+    try:
+
+        df = filter_sector(df_base, sector).copy()
 
 
 
-    # ----------------- Normalizaciones útiles -----------------
+        def ensure_numeric_columns(columns):
 
-    if grupo == "4":
+            for col in columns:
 
-        if "CENTRO_G4" in df.columns:
+                if col not in df.columns:
 
-            df["G4"] = df["CENTRO_G4"]
+                    df[col] = 0
 
-        elif "CENTRO G4" in df.columns:
 
-            df["G4"] = df["CENTRO G4"]
+
+        def series_or_default(col_name: str, default=0):
+
+            if col_name in df.columns:
+
+                return df[col_name]
+
+            return pd.Series(default, index=df.index)
+
+
+
+        ensure_numeric_columns([
+
+            "Stock", "PPTO_MES",
+
+            "PRD_Dia", "PRD_Mes", "PRD_A?o",
+
+            "NAC_Dia", "NAC_Mes", "NAC_A?o",
+
+            "EXP_Dia", "EXP_Mes", "EXP_A?o",
+
+            "PPTO", "TOT_Dia", "TOT_Mes", "TOT_A?o",
+
+        ])
+
+
+
+        if "SECTOR" not in df.columns:
+
+            df["SECTOR"] = "SIN SECTOR"
+
+        if "UND" not in df.columns:
+
+            df["UND"] = df.get("UNIDAD DE MEDIDA BASE", "")
+
+
+
+        if grupo == "1":
+
+            _ensure_jer_col(df, "JERARQUIA2 G1")
+
+        elif grupo == "2":
+
+            _ensure_jer_col(df, "JERARQUIA2 G2")
+
+            _ensure_col(df, "CENTRO", ["CENTRO", "CENTROSAP", "PLANTA", "CODCENTRO"], default="")
+
+        elif grupo == "3":
+
+            _ensure_jer_col(df, "JERARQUIA2 G3")
+
+            _ensure_col(df, "CENTRO", ["CENTRO", "CENTROSAP", "PLANTA", "CODCENTRO"], default="")
+
+        elif grupo == "4":
+
+            _ensure_jer_col(df, "JERARQUIA2 G4")
+
+            _ensure_col(df, "CENTRO", ["CENTRO", "CENTRO_G4", "CENTRO G4", "CENTROSAP", "PLANTA", "CODCENTRO"], default="")
+
+            _ensure_col(df, "G4", ["G4", "CENTRO_G4", "CENTRO G4", "CENTRO"], default="")
+
+            if "Stock Total" not in df.columns:
+
+                df["Stock Total"] = pd.to_numeric(series_or_default("Stock"), errors="coerce").fillna(0)
+
+            if "Stock Disponible" not in df.columns:
+
+                df["Stock Disponible"] = df["Stock Total"].fillna(0)
+
+
+
+            import numpy as np
+
+            ord_j4_col = _pick_order_col(df, ["ORDEN_JERARQUIA2 G4", "ORDEN_JERARQUIA2_G4", "ORDEN_JERARQUIA2"])
+
+            ord_c4_col = _pick_order_col(df, ["ORDEN_CENTRO G4", "ORDEN_CENTRO_G4", "ORDEN_CENTRO"])
+
+
+
+            ord_j = pd.to_numeric(df[ord_j4_col], errors="coerce") if ord_j4_col else pd.Series(np.nan, index=df.index)
+
+            ord_c = pd.to_numeric(df[ord_c4_col], errors="coerce") if ord_c4_col else pd.Series(np.nan, index=df.index)
+
+
+
+            sort_by = ["__ord_j2", "__ord_cg4"] + [c for c in ["JERARQUIA2 G4", "G4"] if c in df.columns]
+
+            df = (
+
+                df.assign(__ord_j2=ord_j.fillna(np.inf),
+
+                          __ord_cg4=ord_c.fillna(np.inf))
+
+                  .sort_values(by=sort_by,
+
+                               ascending=[True] * len(sort_by),
+
+                               kind="mergesort")
+
+                  .drop(columns=["__ord_j2", "__ord_cg4"])
+
+            )
+
+        elif grupo == "5":
+
+            _ensure_col(df, "CENTRO", ["CENTRO", "CENTROSAP", "PLANTA", "CODCENTRO"], default="")
+
+            _ensure_jer_col(df, "JERARQUIA2")
+
+            _ensure_col(df, "TIPO G5", ["TIPO G5", "TIPO_G5", "TIPOG5", "TIPO"], default="SIN TIPO")
+
+            df["TIPO G5"] = df["TIPO G5"].fillna("SIN TIPO")
+
+            df.loc[df["TIPO G5"].astype(str).str.strip() == "", "TIPO G5"] = "SIN TIPO"
+
+            df["JERARQUIA2"] = df["JERARQUIA2"].fillna("SIN JERARQUIA")
+
+            df.loc[df["JERARQUIA2"].astype(str).str.strip() == "", "JERARQUIA2"] = "SIN JERARQUIA"
+
+            df = df[df["SECTOR"].astype(str).str.upper() == "SALES"].copy()
+
+            if "Stock Total" not in df.columns:
+
+                df["Stock Total"] = pd.to_numeric(series_or_default("Stock"), errors="coerce").fillna(0)
+
+            if "Stock Disponible" not in df.columns:
+
+                df["Stock Disponible"] = df["Stock Total"].fillna(0)
+
+
+
+        def detect_material_cols(columns):
+
+            cols_upper = {c.upper(): c for c in columns}
+
+            if "COD_MATERIAL" in cols_upper and "MATERIAL" in cols_upper:
+
+                return cols_upper["COD_MATERIAL"], cols_upper["MATERIAL"]
+
+            code_aliases = ["COD_MAT", "COD_MATERIAL", "CODIGO", "CODIGO MATERIAL",
+
+                            "CODIGO_MATERIAL", "COD_MATNR", "MATNR"]
+
+            name_aliases = ["DESC_MAT", "DESC_MATERIAL", "DESCRIPCION", "DESCRIPCION MATERIAL",
+
+                            "TEXTO BREVE DE MATERIAL", "DESCRIPCION_MATERIAL",
+
+                            "DESCRIPCION_MAT", "MAKTX", "NOMBRE", "NOMBRE MATERIAL", "MATERIAL"]
+
+            code_col = next((cols_upper[a] for a in code_aliases if a in cols_upper), None)
+
+            name_col = next((cols_upper[a] for a in name_aliases if a in cols_upper), None)
+
+            return code_col, name_col
+
+
+
+        code_col, name_col = detect_material_cols(df.columns)
+
+        if code_col and "COD_MAT" not in df.columns:
+
+            df = df.rename(columns={code_col: "COD_MAT"})
+
+            code_col = "COD_MAT"
+
+        if name_col and "DESC_MAT" not in df.columns:
+
+            df = df.rename(columns={name_col: "DESC_MAT"})
+
+            name_col = "DESC_MAT"
+
+
+
+        NUMS = ["Stock", "PPTO_MES", "PRD_Dia", "PRD_Mes", "PRD_A?o",
+
+                "NAC_Dia", "NAC_Mes", "NAC_A?o",
+
+                "EXP_Dia", "EXP_Mes", "EXP_A?o",
+
+                "PPTO", "TOT_Dia", "TOT_Mes", "TOT_A?o"]
+
+
+
+        stock_total_col = "Stock Total" if "Stock Total" in df.columns else "Stock"
+
+        stock_disp_col  = "Stock Disponible" if "Stock Disponible" in df.columns else None
+
+
+
+        cols_g4 = ["JERARQUIA2 G4", "CENTRO", "G4", "UND",
+
+                   (_pick_order_col(df, ["ORDEN_JERARQUIA2 G4", "ORDEN_JERARQUIA2_G4", "ORDEN_JERARQUIA2"]) or "ORDEN_JERARQUIA2"),
+
+                   (_pick_order_col(df, ["ORDEN_CENTRO G4", "ORDEN_CENTRO_G4", "ORDEN_CENTRO"]) or "ORDEN_CENTRO"),
+
+                   stock_total_col] + ([stock_disp_col] if stock_disp_col else []) + [
+
+                   "PRD_Dia", "PRD_Mes", "PRD_A?o",
+
+                   "NAC_Dia", "NAC_Mes", "NAC_A?o",
+
+                   "EXP_Dia", "EXP_Mes", "EXP_A?o"]
+
+
+
+        cols_g5 = ["CENTRO", "SECTOR", "TIPO G5", "JERARQUIA2", "UND",
+
+                   (_pick_order_col(df, ["ORDEN_CENTRO G5", "ORDEN_CENTRO_G5", "ORDEN_CENTRO"]) or "ORDEN_CENTRO"),
+
+                   (_pick_order_col(df, ["ORDEN_TIPO G5", "ORDEN_TIPO_G5", "ORDEN_TIPO", "ORDEN_GRUPO_MATERIALES G5"]) or "ORDEN_TIPO"),
+
+                   (_pick_order_col(df, ["ORDEN_JERARQUIA2"]) or "ORDEN_JERARQUIA2"),
+
+                   stock_total_col] + ([stock_disp_col] if stock_disp_col else []) + [
+
+                   "PRD_Dia", "PRD_Mes", "PRD_A?o",
+
+                   "NAC_Dia", "NAC_Mes", "NAC_A?o",
+
+                   "EXP_Dia", "EXP_Mes", "EXP_A?o"]
+
+
+
+        COLUMNS_BY_GROUP = {
+
+            "1": ["SECTOR", "JERARQUIA2 G1", "UND"] + NUMS,
+
+            "2": ["CENTRO", "SECTOR", "JERARQUIA2 G2", "UND"] + NUMS,
+
+            "3": ["CENTRO", "SECTOR", "JERARQUIA2 G3", "COD_MAT", "DESC_MAT", "UND", stock_total_col, "ORDEN_CENTRO G3", "ORDEN_JERARQUIA2 G3"] + NUMS,
+
+            "4": cols_g4,
+
+            "5": cols_g5,
+
+        }
+
+
+
+        if cols:
+
+            wanted = [c.strip() for c in cols.split(",") if c.strip()]
 
         else:
 
-            df["G4"] = ""
+            wanted = COLUMNS_BY_GROUP.get(grupo, COLUMNS_BY_GROUP["1"])
 
 
 
-        import numpy as np
+        prefix = []
 
-        ord_j4_col = _pick_order_col(df, ["ORDEN_JERARQUIA2 G4","ORDEN_JERARQUIA2_G4","ORDEN_JERARQUIA2"])
+        if code_col and code_col not in wanted:
 
-        ord_c4_col = _pick_order_col(df, ["ORDEN_CENTRO G4","ORDEN_CENTRO_G4","ORDEN_CENTRO"])
+            prefix.append(code_col)
 
+        if name_col and name_col not in wanted:
 
+            prefix.append(name_col)
 
-        ord_j = pd.to_numeric(df[ord_j4_col], errors="coerce") if ord_j4_col else pd.Series(np.nan, index=df.index)
 
-        ord_c = pd.to_numeric(df[ord_c4_col], errors="coerce") if ord_c4_col else pd.Series(np.nan, index=df.index)
 
+        ordered, seen = [], set()
 
+        for c in prefix + wanted:
 
-        df = (
+            if c in df.columns and c not in seen:
 
-            df.assign(__ord_j2=ord_j.fillna(np.inf),
+                ordered.append(c)
 
-                      __ord_cg4=ord_c.fillna(np.inf))
+                seen.add(c)
 
-              .sort_values(by=["__ord_j2", "__ord_cg4", "JERARQUIA2 G4", "G4"],
 
-                           ascending=[True, True, True, True],
 
-                           kind="mergesort")
+        existing = ordered if ordered else list(df.columns)
 
-              .drop(columns=["__ord_j2", "__ord_cg4"])
+        df = df[existing]
 
-        )
+    except Exception:
 
-    if grupo == "5":
-        if "SECTOR" in df.columns:
-            df = df[df["SECTOR"].astype(str).str.upper() == "SALES"].copy()
-        _ensure_jer_col(df, "JERARQUIA2")
-        if "TIPO G5" not in df.columns:
-            for c in ["TIPO_G5", "TIPOG5", "TIPO"]:
-                if c in df.columns:
-                    df["TIPO G5"] = df[c]
-                    break
-            else:
-                df["TIPO G5"] = "SIN TIPO"
+        app.logger.exception("Error preparando CSV")
 
-
-
-    # ----------------- Detección de columnas de material -----------------
-
-    def detect_material_cols(columns):
-
-        cols_upper = {c.upper(): c for c in columns}
-
-        if "COD_MATERIAL" in cols_upper and "MATERIAL" in cols_upper:
-
-            return cols_upper["COD_MATERIAL"], cols_upper["MATERIAL"]
-
-        code_aliases = ["COD_MAT","COD_MATERIAL","CODIGO","CODIGO MATERIAL",
-
-                        "CODIGO_MATERIAL","COD_MATNR","MATNR"]
-
-        name_aliases = ["DESC_MAT","DESC_MATERIAL","DESCRIPCION","DESCRIPCION MATERIAL",
-
-                        "TEXTO BREVE DE MATERIAL","DESCRIPCION_MATERIAL",
-
-                        "DESCRIPCION_MAT","MAKTX","NOMBRE","NOMBRE MATERIAL","MATERIAL"]
-
-        code_col = next((cols_upper[a] for a in code_aliases if a in cols_upper), None)
-
-        name_col = next((cols_upper[a] for a in name_aliases if a in cols_upper), None)
-
-        return code_col, name_col
-
-
-
-    code_col, name_col = detect_material_cols(df.columns)
-
-    if code_col and "COD_MAT" not in df.columns:
-
-        df = df.rename(columns={code_col: "COD_MAT"})
-
-        code_col = "COD_MAT"
-
-    if name_col and "DESC_MAT" not in df.columns:
-
-        df = df.rename(columns={name_col: "DESC_MAT"})
-
-        name_col = "DESC_MAT"
-
-
-
-    NUMS = ["Stock","PPTO_MES","PRD_Dia","PRD_Mes","PRD_Año",
-
-            "NAC_Dia","NAC_Mes","NAC_Año",
-
-            "EXP_Dia","EXP_Mes","EXP_Año",
-
-            "PPTO","TOT_Dia","TOT_Mes","TOT_Año"]
-
-
-
-    stock_total_col = "Stock Total" if "Stock Total" in df.columns else "Stock"
-
-    stock_disp_col  = "Stock Disponible" if "Stock Disponible" in df.columns else None
-
-
-
-    cols_g4 = ["JERARQUIA2 G4","CENTRO","G4","UND",
-
-               (_pick_order_col(df, ["ORDEN_JERARQUIA2 G4","ORDEN_JERARQUIA2_G4","ORDEN_JERARQUIA2"]) or "ORDEN_JERARQUIA2"),
-
-               (_pick_order_col(df, ["ORDEN_CENTRO G4","ORDEN_CENTRO_G4","ORDEN_CENTRO"]) or "ORDEN_CENTRO"),
-
-               stock_total_col] + ([stock_disp_col] if stock_disp_col else []) + [
-
-               "PRD_Dia","PRD_Mes","PRD_Año",
-
-               "NAC_Dia","NAC_Mes","NAC_Año",
-
-               "EXP_Dia","EXP_Mes","EXP_Año"]
-
-
-
-    cols_g5 = ["CENTRO","SECTOR","TIPO G5","JERARQUIA2","UND",
-
-               (_pick_order_col(df, ["ORDEN_CENTRO G5","ORDEN_CENTRO_G5","ORDEN_CENTRO"]) or "ORDEN_CENTRO"),
-
-               (_pick_order_col(df, ["ORDEN_TIPO G5","ORDEN_TIPO_G5","ORDEN_TIPO"]) or "ORDEN_TIPO"),
-
-               (_pick_order_col(df, ["ORDEN_JERARQUIA2"]) or "ORDEN_JERARQUIA2"),
-
-               stock_total_col] + ([stock_disp_col] if stock_disp_col else []) + [
-
-               "PRD_Dia","PRD_Mes","PRD_AÃ±o",
-
-               "NAC_Dia","NAC_Mes","NAC_AÃ±o",
-
-               "EXP_Dia","EXP_Mes","EXP_AÃ±o"]
-
-
-
-    COLUMNS_BY_GROUP = {
-
-        "1": ["SECTOR","JERARQUIA2 G1","UND"] + NUMS,
-
-        "2": ["CENTRO","SECTOR","JERARQUIA2 G2","UND"] + NUMS,
-
-        "3": ["CENTRO","SECTOR","JERARQUIA2 G3","COD_MAT","DESC_MAT","UND",stock_total_col,"ORDEN_CENTRO G3","ORDEN_JERARQUIA2 G3"] + NUMS,
-
-        "4": cols_g4,
-
-        "5": cols_g5,
-
-    }
-
-
-
-    if cols:
-
-        wanted = [c.strip() for c in cols.split(",") if c.strip()]
-
-    else:
-
-        wanted = COLUMNS_BY_GROUP.get(grupo, COLUMNS_BY_GROUP["1"])
-
-
-
-    prefix = []
-
-    if code_col and code_col not in wanted:
-
-        prefix.append(code_col)
-
-    if name_col and name_col not in wanted:
-
-        prefix.append(name_col)
-
-
-
-    ordered, seen = [], set()
-
-    for c in prefix + wanted:
-
-        if c in df.columns and c not in seen:
-
-            ordered.append(c)
-
-            seen.add(c)
-
-
-
-    existing = ordered if ordered else list(df.columns)
-
-    df = df[existing]
+        return Response("Error inesperado al generar el CSV.", mimetype="text/plain; charset=utf-8", status=503)
 
 
 
@@ -3142,7 +3256,7 @@ def csv_download():
 
     if bom == "1":
 
-        csv_text = "\ufeff" + csv_text
+        csv_text = "﻿" + csv_text
 
 
 
@@ -3155,8 +3269,6 @@ def csv_download():
     return Response(csv_text, mimetype="text/csv",
 
                     headers={"Content-Disposition": f"attachment; filename={filename}"})
-
-
 
 
 
