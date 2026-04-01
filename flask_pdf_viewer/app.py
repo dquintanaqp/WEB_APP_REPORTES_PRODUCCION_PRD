@@ -1433,6 +1433,7 @@ def build_pdf_group3(meta, df: pd.DataFrame) -> bytes:
         "EXP_Dia", "EXP_Mes", "EXP_Año",
         "PPTO", "TOT_Dia", "TOT_Mes", "TOT_Año"
     ]
+    display_num_cols = [num_cols[i] for i in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14)]
     for c in num_cols:
         if c not in df.columns:
             df[c] = 0
@@ -1647,6 +1648,13 @@ def build_pdf_group3(meta, df: pd.DataFrame) -> bytes:
     for (centro, sector), sub_cs in g.groupby(["CENTRO", "SECTOR"], dropna=False, sort=False):
         section_band(centro, sector)
 
+        center_key = _t(centro).strip().upper()
+        sector_key = _t(sector).strip().upper()
+        show_combined_sales_total = sector_key == "SALES" and center_key in {"OQUENDO", "HUACHO"}
+        combined_g3_tot = pd.Series(0.0, index=num_cols, dtype="float64")
+        combined_g3_has_human = False
+        combined_g3_has_industrial = False
+
         for jer2, sub in sub_cs.groupby("JERARQUIA2 G3", dropna=False, sort=False):
             is_sales = str(sector).strip().upper() == "SALES"
             canal_groups = list(sub.groupby("CANAL G3", dropna=False, sort=False)) if is_sales else None
@@ -1759,6 +1767,14 @@ def build_pdf_group3(meta, df: pd.DataFrame) -> bytes:
 
             # Totales por jerarquía
             tot = sub[num_cols].sum(numeric_only=True)
+            jer2_key = _t(jer2).strip().upper()
+            if show_combined_sales_total:
+                if jer2_key in {"CONSUMO HUMANO", "SAL CONSUMO HUMANO"}:
+                    combined_g3_tot = combined_g3_tot.add(tot, fill_value=0)
+                    combined_g3_has_human = True
+                elif jer2_key == "SAL INDUSTRIAL":
+                    combined_g3_tot = combined_g3_tot.add(tot, fill_value=0)
+                    combined_g3_has_industrial = True
             total_abs_label = _t(jer2).upper()[:40] if canal_groups is not None else ""
             row_tot = [
                 "",
@@ -1781,6 +1797,21 @@ def build_pdf_group3(meta, df: pd.DataFrame) -> bytes:
                 _fmt(tot["TOT_Año"]),
             ]
             print_row(row_tot, bold=True, fill=True, skip_jer=True, check_space=False)
+
+            if (
+                show_combined_sales_total
+                and jer2_key == "SAL INDUSTRIAL"
+                and combined_g3_has_human
+                and combined_g3_has_industrial
+            ):
+                row_combined = [
+                    "",
+                    "TOTAL",
+                    "CONSUMO HUMANO + SAL INDUSTRIAL",
+                    "",
+                    *[_fmt(combined_g3_tot[k]) for k in display_num_cols],
+                ]
+                print_row(row_combined, bold=True, fill=True, skip_jer=True, check_space=True)
 
     return _pdf_bytes(pdf)
 
@@ -2274,8 +2305,10 @@ def build_pdf_group5(meta, df: pd.DataFrame) -> bytes:
     df["JERARQUIA2"] = df["JERARQUIA2"].fillna("SIN JERARQUIA")
     df.loc[df["JERARQUIA2"].astype(str).str.strip() == "", "JERARQUIA2"] = "SIN JERARQUIA"
 
-    # Grupo 5 aplica solo a Sales
+    # Grupo 5 aplica solo a Sales y excluye MATERIA PRIMA en TIPO G5/JERARQUIA2.
     df = df[df["SECTOR"].astype(str).str.upper() == "SALES"].copy()
+    df = df[df["TIPO G5"].astype(str).str.strip().str.upper() != "MATERIA PRIMA"].copy()
+    df = df[df["JERARQUIA2"].astype(str).str.strip().str.upper() != "MATERIA PRIMA"].copy()
     if df.empty:
         return build_maintenance_pdf("Grupo 5 disponible solo para Sales o sin datos para los filtros seleccionados.")
 
@@ -3087,6 +3120,8 @@ def csv_download():
             df.loc[df["JERARQUIA2"].astype(str).str.strip() == "", "JERARQUIA2"] = "SIN JERARQUIA"
 
             df = df[df["SECTOR"].astype(str).str.upper() == "SALES"].copy()
+            df = df[df["TIPO G5"].astype(str).str.strip().str.upper() != "MATERIA PRIMA"].copy()
+            df = df[df["JERARQUIA2"].astype(str).str.strip().str.upper() != "MATERIA PRIMA"].copy()
 
             if "Stock Total" not in df.columns:
 
